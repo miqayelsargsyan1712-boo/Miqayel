@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="hy">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Miqayel Block World</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #78c9f2; font-family: Arial, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+    #help { position: fixed; inset: 18px auto auto 18px; padding: 12px 15px; color: white;
+      background: #0008; border-radius: 8px; line-height: 1.5; user-select: none; }
+    #crosshair { position: fixed; left: 50%; top: 50%; width: 14px; height: 14px; transform: translate(-50%, -50%);
+      pointer-events: none; }
+    #crosshair:before, #crosshair:after { content: ""; position: absolute; background: white; box-shadow: 0 0 2px #000; }
+    #crosshair:before { width: 14px; height: 2px; top: 6px; }
+    #crosshair:after { width: 2px; height: 14px; left: 6px; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="help">Սեղմեք խաղի վրա<br>WASD՝ շարժում, մկնիկ՝ նայել<br>ESC՝ ազատել մկնիկը</div>
+  <div id="crosshair"></div>
+  <script>
+    "use strict";
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const size = 24, world = [];
+    const player = { x: size / 2, y: size / 2, z: 1.7, yaw: 0, pitch: 0 };
+    const keys = new Set();
+    let last = performance.now();
+
+    for (let x = 0; x < size; x++) {
+      world[x] = [];
+      for (let y = 0; y < size; y++) {
+        const edge = Math.min(x, y, size - 1 - x, size - 1 - y);
+        const hill = Math.max(0, Math.floor(2 + Math.sin(x * .7) * .7 + Math.cos(y * .55) * .7));
+        world[x][y] = Math.min(5, Math.max(1, hill + (edge < 2 ? 1 : 0)));
+      }
+    }
+
+    function resize() {
+      const scale = Math.min(1, devicePixelRatio || 1);
+      canvas.width = innerWidth * scale;
+      canvas.height = innerHeight * scale;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    }
+    addEventListener("resize", resize);
+    resize();
+
+    addEventListener("keydown", e => keys.add(e.code));
+    addEventListener("keyup", e => keys.delete(e.code));
+    canvas.addEventListener("click", () => canvas.requestPointerLock());
+    document.addEventListener("mousemove", e => {
+      if (document.pointerLockElement !== canvas) return;
+      player.yaw += e.movementX * .0025;
+      player.pitch = Math.max(-1.2, Math.min(1.2, player.pitch - e.movementY * .0025));
+    });
+
+    function heightAt(x, y) {
+      x = Math.floor(x); y = Math.floor(y);
+      return world[x] && world[x][y] ? world[x][y] : 0;
+    }
+    function update(dt) {
+      const speed = keys.has("ShiftLeft") ? 7 : 4;
+      let forward = (keys.has("KeyW") ? 1 : 0) - (keys.has("KeyS") ? 1 : 0);
+      let side = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+      const length = Math.hypot(forward, side) || 1;
+      forward /= length; side /= length;
+      const dx = (Math.cos(player.yaw) * forward - Math.sin(player.yaw) * side) * speed * dt;
+      const dy = (Math.sin(player.yaw) * forward + Math.cos(player.yaw) * side) * speed * dt;
+      const nx = Math.max(1.1, Math.min(size - 1.1, player.x + dx));
+      const ny = Math.max(1.1, Math.min(size - 1.1, player.y + dy));
+      if (heightAt(nx, player.y) < 4) player.x = nx;
+      if (heightAt(player.x, ny) < 4) player.y = ny;
+    }
+
+    function color(block, side) {
+      const colors = ["#68b94c", "#8d633c", "#a98256", "#777777", "#b5b5b5", "#4f8c3b"];
+      const base = colors[Math.max(0, Math.min(colors.length - 1, block - 1))];
+      return side === 0 ? base : side === 1 ? shade(base, -.18) : shade(base, -.38);
+    }
+    function shade(hex, amount) {
+      const n = parseInt(hex.slice(1), 16);
+      const r = Math.max(0, Math.min(255, (n >> 16) + amount * 255));
+      const g = Math.max(0, Math.min(255, ((n >> 8) & 255) + amount * 255));
+      const b = Math.max(0, Math.min(255, (n & 255) + amount * 255));
+      return `rgb(${r},${g},${b})`;
+    }
+    function render() {
+      const w = innerWidth, h = innerHeight;
+      const horizon = h * (.5 + player.pitch * .35);
+      const sky = ctx.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0, "#62b9eb"); sky.addColorStop(.58, "#bde9fa"); sky.addColorStop(.581, "#6aaf4f"); sky.addColorStop(1, "#345f2e");
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
+      const columns = Math.max(100, Math.floor(w / 3));
+      const strip = w / columns;
+      for (let i = 0; i < columns; i++) {
+        const cameraX = (i / columns - .5) * 1.35;
+        const angle = player.yaw + Math.atan(cameraX);
+        const ray = cast(angle);
+        const distance = Math.max(.2, ray.distance * Math.cos(Math.atan(cameraX)));
+        const wallHeight = Math.min(h * 3, h / distance * 1.15);
+        const top = horizon - wallHeight * (.58 - player.z * .03);
+        const bottom = horizon + wallHeight * .42;
+        ctx.fillStyle = color(ray.block, ray.side);
+        ctx.fillRect(i * strip, top, strip + 1, bottom - top);
+        if (ray.top) {
+          ctx.fillStyle = color(ray.block, 0);
+          ctx.fillRect(i * strip, top, strip + 1, Math.max(1, wallHeight * .08));
+        }
+      }
+    }
+    function cast(angle) {
+      const dx = Math.cos(angle), dy = Math.sin(angle);
+      let x = player.x, y = player.y, distance = 0, side = 0;
+      for (let i = 0; i < 180; i++) {
+        x += dx * .045; y += dy * .045; distance += .045;
+        const block = heightAt(x, y);
+        if (block) {
+          side = Math.abs(Math.sin(angle)) > Math.abs(Math.cos(angle)) ? 1 : 2;
+          return { distance, block, side, top: block > 1 };
+        }
+      }
+      return { distance: 8, block: 1, side: 0, top: false };
+    }
+    function frame(now) {
+      const dt = Math.min(.05, (now - last) / 1000); last = now;
+      update(dt); render(); requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
